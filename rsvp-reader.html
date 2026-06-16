@@ -1,0 +1,1141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>FlowRead · RSVP Reader</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+<style>
+  /* ── Design tokens ───────────────────────────────────── */
+  :root {
+    --bg:         #0d0d0f;
+    --surface:    #16161a;
+    --surface2:   #1e1e24;
+    --border:     #2a2a34;
+    --text:       #e8e8f0;
+    --muted:      #5a5a72;
+    --accent:     #e8354a;   /* ORP red */
+    --accent2:    #3d6eff;   /* blue highlight */
+    --word-bg:    #111116;
+    --radius:     12px;
+    --radius-sm:  8px;
+    --mono:       'Courier New', Courier, monospace;
+    --sans:       -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  }
+
+  /* ── Reset ───────────────────────────────────────────── */
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    height: 100%;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--sans);
+    -webkit-tap-highlight-color: transparent;
+    overscroll-behavior: none;
+  }
+
+  /* ── Layout shell ────────────────────────────────────── */
+  .app {
+    display: flex;
+    flex-direction: column;
+    min-height: 100dvh;
+    max-width: 680px;
+    margin: 0 auto;
+    padding: 0 16px 24px;
+  }
+
+  /* ── Header ──────────────────────────────────────────── */
+  .header {
+    padding: 20px 0 12px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+  .logo-dot {
+    width: 10px; height: 10px;
+    background: var(--accent);
+    border-radius: 50%;
+    flex-shrink: 0;
+    animation: pulse 2.4s ease-in-out infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; transform: scale(1); }
+    50%       { opacity: 0.4; transform: scale(0.7); }
+  }
+  .logo-dot.playing { animation: pulse-fast 0.6s ease-in-out infinite; }
+  @keyframes pulse-fast {
+    0%, 100% { opacity: 1; }
+    50%       { opacity: 0.3; }
+  }
+  .app-title {
+    font-size: 17px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    color: var(--text);
+  }
+  .app-title span { color: var(--accent); }
+
+  /* ── WPM Control ─────────────────────────────────────── */
+  .wpm-section {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 14px 16px;
+    margin-bottom: 14px;
+  }
+  .wpm-row {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .wpm-label {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    color: var(--muted);
+    text-transform: uppercase;
+    width: 36px;
+    flex-shrink: 0;
+  }
+  .wpm-slider {
+    flex: 1;
+    -webkit-appearance: none;
+    appearance: none;
+    height: 4px;
+    background: var(--border);
+    border-radius: 2px;
+    outline: none;
+    cursor: pointer;
+  }
+  .wpm-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 22px; height: 22px;
+    border-radius: 50%;
+    background: var(--accent);
+    cursor: pointer;
+    border: 3px solid var(--bg);
+    box-shadow: 0 0 0 1px var(--accent);
+  }
+  .wpm-slider::-moz-range-thumb {
+    width: 22px; height: 22px;
+    border-radius: 50%;
+    background: var(--accent);
+    cursor: pointer;
+    border: 3px solid var(--bg);
+  }
+  .wpm-input {
+    width: 66px;
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    color: var(--text);
+    font-size: 16px;
+    font-weight: 700;
+    text-align: center;
+    padding: 6px 4px;
+    -moz-appearance: textfield;
+    flex-shrink: 0;
+  }
+  .wpm-input::-webkit-inner-spin-button,
+  .wpm-input::-webkit-outer-spin-button { -webkit-appearance: none; }
+  .wpm-unit {
+    font-size: 11px;
+    color: var(--muted);
+    letter-spacing: 0.06em;
+    flex-shrink: 0;
+  }
+
+  /* ── RSVP Reader ─────────────────────────────────────── */
+  .reader-section {
+    background: var(--word-bg);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    margin-bottom: 14px;
+    padding: 0 0 20px;
+    position: relative;
+    overflow: hidden;
+  }
+
+  /* top micro-bar */
+  .reader-topbar {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 16px 0;
+    margin-bottom: 12px;
+  }
+  .reader-label {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.12em;
+    color: var(--muted);
+    font-weight: 600;
+  }
+  .reader-speed-badge {
+    font-size: 10px;
+    color: var(--accent);
+    font-weight: 700;
+    letter-spacing: 0.06em;
+  }
+
+  /* ORP guide line */
+  .orp-guide {
+    position: relative;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    height: 130px;
+    user-select: none;
+  }
+
+  /* ORP centering: the left chunk + ORP letter together are right-anchored
+     at the screen's 50% line. The right chunk starts at 50%.
+     Result: the ORP letter's right edge sits at 50%, meaning the letter
+     straddles the center — visually pinned at the focal point.
+     This matches the classic Spritz alignment. */
+  .word-display {
+    position: relative;
+    width: 100%;
+    height: clamp(44px, 10vw, 56px);
+  }
+  /* left chars + ORP char: one block, right-edge at 50% */
+  .word-pre-orp {
+    position: absolute;
+    right: 50%;
+    top: 50%;
+    transform: translateY(-50%);
+    font-family: var(--mono);
+    font-size: clamp(28px, 7vw, 42px);
+    font-weight: 400;
+    color: var(--text);
+    letter-spacing: 0.02em;
+    line-height: 1;
+    white-space: pre;
+    text-align: right;
+    display: flex;
+    align-items: center;
+  }
+  /* the ORP letter itself, inside .word-pre-orp */
+  .word-orp {
+    color: var(--accent);
+    font-weight: 700;
+  }
+  /* right chars: left-edge at 50% */
+  .word-right {
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    transform: translateY(-50%);
+    font-family: var(--mono);
+    font-size: clamp(28px, 7vw, 42px);
+    font-weight: 400;
+    color: var(--text);
+    letter-spacing: 0.02em;
+    line-height: 1;
+    white-space: pre;
+    text-align: left;
+  }
+
+  /* horizontal tick marks above / below ORP */
+  .orp-ticks {
+    display: flex;
+    justify-content: center;
+    gap: 0;
+    padding: 0 0 6px;
+  }
+  .orp-tick-top, .orp-tick-bottom {
+    width: 2px; height: 8px;
+    background: var(--accent);
+    opacity: 0.5;
+    border-radius: 1px;
+  }
+
+  /* idle state */
+  .idle-message {
+    font-size: 13px;
+    color: var(--muted);
+    text-align: center;
+    letter-spacing: 0.03em;
+    padding: 8px 20px 0;
+    min-height: 24px;
+  }
+
+  /* ── Text Input Section ───────────────────────────────── */
+  .input-section {
+    margin-bottom: 14px;
+  }
+  .input-label {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    color: var(--muted);
+    text-transform: uppercase;
+    margin-bottom: 8px;
+    display: block;
+  }
+  .text-input {
+    width: 100%;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    color: var(--text);
+    font-size: 14px;
+    line-height: 1.6;
+    padding: 14px 16px;
+    resize: vertical;
+    min-height: 120px;
+    font-family: var(--sans);
+    outline: none;
+    transition: border-color 0.15s;
+  }
+  .text-input::placeholder { color: var(--muted); }
+  .text-input:focus { border-color: var(--accent2); }
+
+  .load-btn {
+    margin-top: 10px;
+    width: 100%;
+    padding: 14px;
+    background: var(--accent2);
+    color: #fff;
+    border: none;
+    border-radius: var(--radius);
+    font-size: 15px;
+    font-weight: 700;
+    cursor: pointer;
+    letter-spacing: 0.04em;
+    transition: opacity 0.15s;
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+  }
+  .load-btn:active { opacity: 0.75; }
+
+  /* ── Controls ─────────────────────────────────────────── */
+  .controls-section {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 16px;
+    margin-bottom: 14px;
+  }
+  .controls-grid {
+    display: grid;
+    grid-template-columns: repeat(5, 1fr);
+    gap: 8px;
+  }
+  .ctrl-btn {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    padding: 12px 4px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
+    background: var(--surface2);
+    color: var(--text);
+    cursor: pointer;
+    transition: background 0.12s, border-color 0.12s;
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+    min-height: 60px;
+  }
+  .ctrl-btn:active { background: var(--border); }
+  .ctrl-btn.primary {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+  }
+  .ctrl-btn.primary:active { opacity: 0.8; }
+  .ctrl-btn svg {
+    width: 22px; height: 22px;
+    flex-shrink: 0;
+  }
+  .ctrl-btn-label {
+    font-size: 9px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--muted);
+    text-align: center;
+  }
+  .ctrl-btn.primary .ctrl-btn-label { color: rgba(255,255,255,0.75); }
+
+  /* ── Progress ────────────────────────────────────────── */
+  .progress-section {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 14px 16px;
+  }
+  .progress-stats {
+    display: flex;
+    justify-content: space-between;
+    margin-bottom: 10px;
+  }
+  .stat {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 2px;
+  }
+  .stat-value {
+    font-size: 17px;
+    font-weight: 700;
+    color: var(--text);
+    letter-spacing: -0.01em;
+  }
+  .stat-label {
+    font-size: 10px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    font-weight: 600;
+  }
+  .progress-bar-track {
+    height: 4px;
+    background: var(--border);
+    border-radius: 2px;
+    overflow: hidden;
+  }
+  .progress-bar-fill {
+    height: 100%;
+    background: var(--accent);
+    border-radius: 2px;
+    width: 0%;
+    transition: width 0.1s linear;
+  }
+
+  /* ── Source tabs ─────────────────────────────────────── */
+  .source-tabs {
+    display: flex;
+    gap: 6px;
+    margin-bottom: 10px;
+  }
+  .source-tab {
+    flex: 1;
+    padding: 9px 8px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
+    background: var(--surface2);
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 600;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    cursor: pointer;
+    text-align: center;
+    transition: all 0.15s;
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+  }
+  .source-tab.active {
+    background: var(--surface);
+    border-color: var(--accent2);
+    color: var(--text);
+  }
+  .source-panel { display: none; }
+  .source-panel.active { display: block; }
+
+  /* ── PDF drop zone ───────────────────────────────────── */
+  .pdf-drop-zone {
+    border: 2px dashed var(--border);
+    border-radius: var(--radius);
+    padding: 32px 20px;
+    text-align: center;
+    cursor: pointer;
+    transition: border-color 0.15s, background 0.15s;
+    position: relative;
+    background: var(--surface);
+    -webkit-tap-highlight-color: transparent;
+    touch-action: manipulation;
+  }
+  .pdf-drop-zone.drag-over {
+    border-color: var(--accent2);
+    background: rgba(61,110,255,0.06);
+  }
+  .pdf-drop-zone.has-file {
+    border-color: var(--accent);
+    border-style: solid;
+  }
+  .pdf-drop-icon {
+    width: 40px; height: 40px;
+    margin: 0 auto 10px;
+    color: var(--muted);
+  }
+  .pdf-drop-zone.has-file .pdf-drop-icon { color: var(--accent); }
+  .pdf-drop-title {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text);
+    margin-bottom: 4px;
+  }
+  .pdf-drop-sub {
+    font-size: 12px;
+    color: var(--muted);
+    line-height: 1.5;
+  }
+  #pdfFileInput {
+    position: absolute;
+    inset: 0;
+    opacity: 0;
+    cursor: pointer;
+    width: 100%;
+    height: 100%;
+  }
+  .pdf-progress {
+    margin-top: 12px;
+    display: none;
+  }
+  .pdf-progress.visible { display: block; }
+  .pdf-progress-bar-track {
+    height: 3px;
+    background: var(--border);
+    border-radius: 2px;
+    overflow: hidden;
+    margin-bottom: 6px;
+  }
+  .pdf-progress-bar-fill {
+    height: 100%;
+    background: var(--accent2);
+    border-radius: 2px;
+    width: 0%;
+    transition: width 0.2s;
+  }
+  .pdf-progress-label {
+    font-size: 11px;
+    color: var(--muted);
+    text-align: center;
+    letter-spacing: 0.04em;
+  }
+
+  /* ── Toast ───────────────────────────────────────────── */
+  .toast {
+    position: fixed;
+    bottom: 32px;
+    left: 50%;
+    transform: translateX(-50%) translateY(20px);
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    color: var(--text);
+    font-size: 13px;
+    font-weight: 600;
+    padding: 10px 20px;
+    border-radius: 100px;
+    opacity: 0;
+    transition: opacity 0.2s, transform 0.2s;
+    pointer-events: none;
+    white-space: nowrap;
+    z-index: 100;
+  }
+  .toast.show {
+    opacity: 1;
+    transform: translateX(-50%) translateY(0);
+  }
+</style>
+</head>
+<body>
+<div class="app">
+
+  <!-- Header -->
+  <header class="header">
+    <div class="logo-dot" id="logoDot"></div>
+    <span class="app-title">Flow<span>Read</span></span>
+  </header>
+
+  <!-- WPM Control -->
+  <div class="wpm-section">
+    <div class="wpm-row">
+      <span class="wpm-label">WPM</span>
+      <input type="range" class="wpm-slider" id="wpmSlider"
+             min="100" max="2000" step="10" value="300">
+      <input type="number" class="wpm-input" id="wpmInput"
+             min="100" max="2000" value="300">
+      <span class="wpm-unit">w/min</span>
+    </div>
+  </div>
+
+  <!-- RSVP Reader -->
+  <div class="reader-section">
+    <div class="reader-topbar">
+      <span class="reader-label">Reading</span>
+      <span class="reader-speed-badge" id="speedBadge">300 WPM</span>
+    </div>
+
+    <div class="orp-guide">
+      <div class="word-display" id="wordDisplay">
+        <!-- left chars + ORP letter: right-edge anchored at 50% -->
+        <span class="word-pre-orp" id="wordPreOrp"><span id="wordLeft"></span><span class="word-orp" id="wordOrp">·</span></span>
+        <!-- right chars: left-edge at 50% -->
+        <span class="word-right" id="wordRight"></span>
+      </div>
+    </div>
+
+    <p class="idle-message" id="idleMessage">Paste your text below and tap Load →</p>
+  </div>
+
+  <!-- Text / PDF Input -->
+  <div class="input-section">
+
+    <!-- Tabs -->
+    <div class="source-tabs">
+      <div class="source-tab active" id="tabText">Paste Text</div>
+      <div class="source-tab" id="tabPdf">Upload PDF</div>
+    </div>
+
+    <!-- Text panel -->
+    <div class="source-panel active" id="panelText">
+      <label class="input-label" for="textInput">Your text</label>
+      <textarea class="text-input" id="textInput"
+        placeholder="Paste any text here — articles, books, notes, anything you want to read faster..."></textarea>
+      <button class="load-btn" id="loadBtn">Load Text</button>
+    </div>
+
+    <!-- PDF panel -->
+    <div class="source-panel" id="panelPdf">
+      <label class="input-label">PDF file</label>
+      <div class="pdf-drop-zone" id="pdfDropZone">
+        <input type="file" id="pdfFileInput" accept=".pdf,application/pdf">
+        <svg class="pdf-drop-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+          <polyline points="14 2 14 8 20 8"/>
+          <line x1="12" y1="18" x2="12" y2="12"/>
+          <line x1="9" y1="15" x2="15" y2="15"/>
+        </svg>
+        <p class="pdf-drop-title" id="pdfDropTitle">Tap to choose a PDF</p>
+        <p class="pdf-drop-sub" id="pdfDropSub">or drag and drop it here</p>
+      </div>
+      <div class="pdf-progress" id="pdfProgress">
+        <div class="pdf-progress-bar-track">
+          <div class="pdf-progress-bar-fill" id="pdfProgressFill"></div>
+        </div>
+        <p class="pdf-progress-label" id="pdfProgressLabel">Extracting text…</p>
+      </div>
+      <button class="load-btn" id="loadPdfBtn" style="margin-top:10px;display:none;">Load PDF Text</button>
+    </div>
+
+  </div>
+
+  <!-- Playback Controls -->
+  <div class="controls-section">
+    <div class="controls-grid">
+
+      <button class="ctrl-btn" id="restartBtn" aria-label="Restart">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="1 4 1 10 7 10"/><path d="M3.51 15a9 9 0 1 0 .49-3.5"/>
+        </svg>
+        <span class="ctrl-btn-label">Restart</span>
+      </button>
+
+      <button class="ctrl-btn" id="backBtn" aria-label="Skip back 10 words">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polygon points="19 20 9 12 19 4 19 20"/><line x1="5" y1="19" x2="5" y2="5"/>
+        </svg>
+        <span class="ctrl-btn-label">−10</span>
+      </button>
+
+      <button class="ctrl-btn primary" id="playPauseBtn" aria-label="Play">
+        <svg id="playIcon" viewBox="0 0 24 24" fill="currentColor">
+          <polygon points="5 3 19 12 5 21 5 3"/>
+        </svg>
+        <svg id="pauseIcon" viewBox="0 0 24 24" fill="currentColor" style="display:none">
+          <rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/>
+        </svg>
+        <span class="ctrl-btn-label" id="playLabel">Play</span>
+      </button>
+
+      <button class="ctrl-btn" id="fwdBtn" aria-label="Skip forward 10 words">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polygon points="5 4 15 12 5 20 5 4"/><line x1="19" y1="5" x2="19" y2="19"/>
+        </svg>
+        <span class="ctrl-btn-label">+10</span>
+      </button>
+
+      <button class="ctrl-btn" id="endBtn" aria-label="Jump to end">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <polyline points="13 17 18 12 13 7"/><polyline points="6 17 11 12 6 7"/>
+        </svg>
+        <span class="ctrl-btn-label">End</span>
+      </button>
+
+    </div>
+  </div>
+
+  <!-- Progress -->
+  <div class="progress-section">
+    <div class="progress-stats">
+      <div class="stat">
+        <span class="stat-value" id="currentWordNum">0</span>
+        <span class="stat-label">Word</span>
+      </div>
+      <div class="stat">
+        <span class="stat-value" id="totalWords">0</span>
+        <span class="stat-label">Total</span>
+      </div>
+      <div class="stat">
+        <span class="stat-value" id="percentDone">0%</span>
+        <span class="stat-label">Done</span>
+      </div>
+      <div class="stat">
+        <span class="stat-value" id="timeLeft">—</span>
+        <span class="stat-label">Left</span>
+      </div>
+    </div>
+    <div class="progress-bar-track">
+      <div class="progress-bar-fill" id="progressFill"></div>
+    </div>
+  </div>
+
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+/* ════════════════════════════════════════════════════════════
+   FlowRead — RSVP Engine
+   ════════════════════════════════════════════════════════════ */
+
+// ── State ──────────────────────────────────────────────────
+const state = {
+  words:       [],   // parsed word array
+  index:       0,    // current word position
+  wpm:         300,
+  playing:     false,
+  loaded:      false,
+  timer:       null, // setInterval handle — ONE at a time
+};
+
+// ── DOM refs ───────────────────────────────────────────────
+const $ = id => document.getElementById(id);
+
+const els = {
+  wpmSlider:      $('wpmSlider'),
+  wpmInput:       $('wpmInput'),
+  speedBadge:     $('speedBadge'),
+  wordPreOrp:     $('wordPreOrp'),
+  wordLeft:       $('wordLeft'),
+  wordOrp:        $('wordOrp'),
+  wordRight:      $('wordRight'),
+  idleMsg:        $('idleMessage'),
+  textInput:      $('textInput'),
+  loadBtn:        $('loadBtn'),
+  playPauseBtn:   $('playPauseBtn'),
+  playIcon:       $('playIcon'),
+  pauseIcon:      $('pauseIcon'),
+  playLabel:      $('playLabel'),
+  restartBtn:     $('restartBtn'),
+  backBtn:        $('backBtn'),
+  fwdBtn:         $('fwdBtn'),
+  endBtn:         $('endBtn'),
+  currentWordNum: $('currentWordNum'),
+  totalWords:     $('totalWords'),
+  percentDone:    $('percentDone'),
+  timeLeft:       $('timeLeft'),
+  progressFill:   $('progressFill'),
+  logoDot:        $('logoDot'),
+  toast:          $('toast'),
+};
+
+// ── ORP calculation ────────────────────────────────────────
+// Based on Spritz-style optimal recognition point:
+// short words  → position 1 (index 0)
+// longer words → roughly 25–35% through the word
+function getORPIndex(wordLen) {
+  if (wordLen <= 1) return 0;
+  if (wordLen <= 3) return 0;
+  if (wordLen <= 6) return 1;
+  if (wordLen <= 9) return 2;
+  if (wordLen <= 13) return 3;
+  return 4;
+}
+
+// ── Word display ───────────────────────────────────────────
+function showWord(word) {
+  if (!word) return;
+  const len = word.length;
+  const orp = getORPIndex(len);
+
+  // Left chars go inside wordPreOrp, before the ORP span
+  els.wordLeft.textContent  = word.slice(0, orp);
+  // ORP letter: the red focal char, right-edge at 50%
+  els.wordOrp.textContent   = word[orp] || '';
+  // Right chars: left-edge at 50%
+  els.wordRight.textContent = word.slice(orp + 1);
+}
+
+function showIdleWord() {
+  els.wordLeft.textContent  = '';
+  els.wordOrp.textContent   = '·';
+  els.wordRight.textContent = '';
+}
+
+// ── Progress update ────────────────────────────────────────
+function updateProgress() {
+  const total   = state.words.length;
+  const current = Math.min(state.index + 1, total);
+  const pct     = total > 0 ? Math.round((state.index / total) * 100) : 0;
+  const wordsLeft = Math.max(0, total - state.index);
+  const minutesLeft = wordsLeft / state.wpm;
+
+  els.currentWordNum.textContent = total > 0 ? current : 0;
+  els.totalWords.textContent     = total;
+  els.percentDone.textContent    = pct + '%';
+  els.progressFill.style.width   = pct + '%';
+
+  if (total === 0 || state.index === 0) {
+    els.timeLeft.textContent = '—';
+  } else if (minutesLeft < 1) {
+    els.timeLeft.textContent = Math.ceil(minutesLeft * 60) + 's';
+  } else {
+    els.timeLeft.textContent = minutesLeft.toFixed(1) + 'm';
+  }
+}
+
+// ── Timer engine ───────────────────────────────────────────
+function getInterval() {
+  return Math.round(60000 / state.wpm);
+}
+
+function stopTimer() {
+  if (state.timer !== null) {
+    clearInterval(state.timer);
+    state.timer = null;
+  }
+}
+
+function startTimer() {
+  stopTimer(); // always kill existing timer first — prevent duplicates
+
+  const interval = getInterval();
+  state.timer = setInterval(() => {
+    if (state.index >= state.words.length) {
+      // Reached end
+      pause();
+      showWord(state.words[state.words.length - 1] || '');
+      updateProgress();
+      showToast('Finished! 🎉');
+      return;
+    }
+    showWord(state.words[state.index]);
+    updateProgress();
+    state.index++;
+  }, interval);
+}
+
+// ── Play / Pause ───────────────────────────────────────────
+function play() {
+  if (!state.loaded || state.words.length === 0) {
+    showToast('Load some text first!');
+    return;
+  }
+  if (state.index >= state.words.length) {
+    state.index = 0; // restart from beginning if done
+  }
+  state.playing = true;
+  setPlayUI(true);
+  startTimer();
+}
+
+function pause() {
+  stopTimer();
+  state.playing = false;
+  setPlayUI(false);
+}
+
+function togglePlayPause() {
+  if (state.playing) {
+    pause();
+  } else {
+    play();
+  }
+}
+
+function setPlayUI(isPlaying) {
+  if (isPlaying) {
+    els.playIcon.style.display  = 'none';
+    els.pauseIcon.style.display = '';
+    els.playLabel.textContent   = 'Pause';
+    els.logoDot.classList.add('playing');
+  } else {
+    els.playIcon.style.display  = '';
+    els.pauseIcon.style.display = 'none';
+    els.playLabel.textContent   = 'Play';
+    els.logoDot.classList.remove('playing');
+  }
+}
+
+// ── Load text ──────────────────────────────────────────────
+function loadText() {
+  const raw = els.textInput.value.trim();
+  if (!raw) {
+    showToast('Please paste some text first.');
+    return;
+  }
+
+  // Pause any existing playback
+  pause();
+  showIdleWord();
+
+  // Parse: split on whitespace, filter empty strings
+  const words = raw.split(/\s+/).filter(w => w.length > 0);
+
+  if (words.length === 0) {
+    showToast('No words found in text.');
+    return;
+  }
+
+  state.words   = words;
+  state.index   = 0;
+  state.loaded  = true;
+  state.playing = false;
+
+  // Show first word statically (no auto-play)
+  showWord(words[0]);
+  els.idleMsg.textContent = 'Press Play to begin reading';
+  updateProgress();
+
+  showToast(`Loaded ${words.length} words — tap Play`);
+}
+
+// ── Skip controls ──────────────────────────────────────────
+function restart() {
+  pause();
+  state.index = 0;
+  if (state.loaded && state.words.length > 0) {
+    showWord(state.words[0]);
+  } else {
+    showIdleWord();
+  }
+  updateProgress();
+}
+
+function skipBack(n = 10) {
+  const wasPlaying = state.playing;
+  if (wasPlaying) stopTimer();
+
+  state.index = Math.max(0, state.index - n - 1); // -1 because timer pre-increments
+  if (state.index < 0) state.index = 0;
+
+  if (state.loaded && state.words.length > 0) {
+    showWord(state.words[state.index]);
+    updateProgress();
+  }
+
+  if (wasPlaying) {
+    // Update index to next word position before resuming
+    state.index = Math.max(0, state.index + 1);
+    state.index = Math.min(state.index, state.words.length);
+    startTimer();
+  }
+}
+
+function skipFwd(n = 10) {
+  const wasPlaying = state.playing;
+  if (wasPlaying) stopTimer();
+
+  state.index = Math.min(state.words.length - 1, state.index + n);
+
+  if (state.loaded && state.words.length > 0) {
+    showWord(state.words[state.index]);
+    updateProgress();
+  }
+
+  if (wasPlaying) {
+    state.index = Math.min(state.index + 1, state.words.length);
+    startTimer();
+  }
+}
+
+function jumpEnd() {
+  pause();
+  if (state.loaded && state.words.length > 0) {
+    state.index = state.words.length - 1;
+    showWord(state.words[state.index]);
+    updateProgress();
+  }
+}
+
+// ── WPM sync ───────────────────────────────────────────────
+function setWpm(val) {
+  const v = Math.max(100, Math.min(2000, parseInt(val, 10) || 300));
+  state.wpm = v;
+  els.wpmSlider.value   = v;
+  els.wpmInput.value    = v;
+  els.speedBadge.textContent = v + ' WPM';
+
+  // If currently playing, restart timer at new speed immediately
+  if (state.playing) {
+    startTimer();
+  }
+}
+
+// ── Toast ──────────────────────────────────────────────────
+let toastTimer = null;
+function showToast(msg) {
+  els.toast.textContent = msg;
+  els.toast.classList.add('show');
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => {
+    els.toast.classList.remove('show');
+  }, 2200);
+}
+
+// ── Button helper: works for both click & touch ────────────
+// Prevents the 300ms mobile click delay and double-fire
+function addTapHandler(el, fn) {
+  let touched = false;
+
+  el.addEventListener('touchstart', e => {
+    e.preventDefault();
+    touched = true;
+    fn();
+  }, { passive: false });
+
+  el.addEventListener('click', () => {
+    if (!touched) fn();
+    touched = false;
+  });
+}
+
+// ── PDF extraction ─────────────────────────────────────────
+// Set PDF.js worker (same CDN version)
+if (typeof pdfjsLib !== 'undefined') {
+  pdfjsLib.GlobalWorkerOptions.workerSrc =
+    'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+}
+
+let pdfExtractedText = '';
+
+async function extractPdfText(file) {
+  const pdfProgress    = document.getElementById('pdfProgress');
+  const pdfProgressFill = document.getElementById('pdfProgressFill');
+  const pdfProgressLabel = document.getElementById('pdfProgressLabel');
+  const pdfDropTitle   = document.getElementById('pdfDropTitle');
+  const loadPdfBtn     = document.getElementById('loadPdfBtn');
+
+  pdfProgress.classList.add('visible');
+  pdfProgressFill.style.width = '0%';
+  pdfProgressLabel.textContent = 'Loading PDF…';
+  loadPdfBtn.style.display = 'none';
+  pdfExtractedText = '';
+
+  try {
+    const arrayBuffer = await file.arrayBuffer();
+    const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+    const totalPages = pdf.numPages;
+    let fullText = '';
+
+    for (let i = 1; i <= totalPages; i++) {
+      const page = await pdf.getPage(i);
+      const content = await page.getTextContent();
+      // Join text items; insert space between items, newline between pages
+      const pageText = content.items
+        .map(item => item.str)
+        .join(' ')
+        .replace(/\s+/g, ' ')
+        .trim();
+      fullText += pageText + '\n';
+
+      const pct = Math.round((i / totalPages) * 100);
+      pdfProgressFill.style.width = pct + '%';
+      pdfProgressLabel.textContent = `Page ${i} of ${totalPages}…`;
+    }
+
+    pdfExtractedText = fullText.trim();
+    const wordCount = pdfExtractedText.split(/\s+/).filter(Boolean).length;
+
+    pdfProgressFill.style.width = '100%';
+    pdfProgressLabel.textContent = `✓ ${wordCount.toLocaleString()} words extracted`;
+    pdfDropTitle.textContent = file.name;
+
+    loadPdfBtn.style.display = 'block';
+    showToast(`PDF ready — ${wordCount.toLocaleString()} words`);
+
+  } catch (err) {
+    console.error('PDF extraction error:', err);
+    pdfProgressLabel.textContent = 'Error reading PDF. Try another file.';
+    showToast('Could not read that PDF.');
+  }
+}
+
+function loadPdfText() {
+  if (!pdfExtractedText) {
+    showToast('No PDF text extracted yet.');
+    return;
+  }
+  // Pipe extracted text into the main load flow
+  document.getElementById('textInput').value = pdfExtractedText;
+  loadText();
+  showToast('PDF loaded — tap Play!');
+}
+
+// PDF drop zone wiring
+const pdfFileInput = document.getElementById('pdfFileInput');
+const pdfDropZone  = document.getElementById('pdfDropZone');
+
+pdfFileInput.addEventListener('change', e => {
+  const file = e.target.files[0];
+  if (file) extractPdfText(file);
+});
+
+// Drag and drop
+pdfDropZone.addEventListener('dragover', e => {
+  e.preventDefault();
+  pdfDropZone.classList.add('drag-over');
+});
+pdfDropZone.addEventListener('dragleave', () => {
+  pdfDropZone.classList.remove('drag-over');
+});
+pdfDropZone.addEventListener('drop', e => {
+  e.preventDefault();
+  pdfDropZone.classList.remove('drag-over');
+  const file = e.dataTransfer.files[0];
+  if (file && file.type === 'application/pdf') {
+    pdfDropZone.classList.add('has-file');
+    extractPdfText(file);
+  } else {
+    showToast('Please drop a PDF file.');
+  }
+});
+
+// Mark drop zone when file chosen via input
+pdfFileInput.addEventListener('change', () => {
+  if (pdfFileInput.files[0]) pdfDropZone.classList.add('has-file');
+});
+
+// ── Tab switching ──────────────────────────────────────────
+function switchTab(tabId, panelId) {
+  document.querySelectorAll('.source-tab').forEach(t => t.classList.remove('active'));
+  document.querySelectorAll('.source-panel').forEach(p => p.classList.remove('active'));
+  document.getElementById(tabId).classList.add('active');
+  document.getElementById(panelId).classList.add('active');
+}
+
+addTapHandler(document.getElementById('tabText'), () => switchTab('tabText', 'panelText'));
+addTapHandler(document.getElementById('tabPdf'),  () => switchTab('tabPdf',  'panelPdf'));
+addTapHandler(document.getElementById('loadPdfBtn'), loadPdfText);
+
+// ── Wire up events ─────────────────────────────────────────
+addTapHandler(els.playPauseBtn, togglePlayPause);
+addTapHandler(els.restartBtn,   restart);
+addTapHandler(els.backBtn,      () => skipBack(10));
+addTapHandler(els.fwdBtn,       () => skipFwd(10));
+addTapHandler(els.endBtn,       jumpEnd);
+addTapHandler(els.loadBtn,      loadText);
+
+// WPM slider
+els.wpmSlider.addEventListener('input', () => setWpm(els.wpmSlider.value));
+
+// WPM numeric input
+els.wpmInput.addEventListener('change', () => setWpm(els.wpmInput.value));
+els.wpmInput.addEventListener('keydown', e => {
+  if (e.key === 'Enter') setWpm(els.wpmInput.value);
+});
+
+// ── Init ───────────────────────────────────────────────────
+setWpm(300);
+showIdleWord();
+updateProgress();
+
+</script>
+</body>
+</html>
